@@ -1,0 +1,199 @@
+[
+  {
+    "dataframe": {
+      "sql": "select s.*, '{0}'::int as rltv_mo from clr.study s inner join clr.study_to_reprocess r on r.studyid = s.studyid and validation_run_date is null and r.rltv_mo='{0}'::int where s.billingdata = true",
+      "parameters": [
+        "rltv_greg_mo"
+      ],
+      "sql_type": "postgreSQL"
+    },
+    "source": "alr",
+    "new_columns": [],
+    "temp_dataframe": "study",
+    "process_order": 1
+  },
+  {
+    "dataframe": {
+      "sql": "select p.* from clr.study_premise p inner join (select distinct s.studyid from clr.study s inner join clr.study_to_reprocess r on r.studyid = s.studyid and validation_run_date is null and r.rltv_mo='{0}'::int where s.billingdata = true) st on st.studyid = p.studyid where (p.company= 'FPL' or p.studyid like '%UEV%') and coalesce(p.deleted_flg, false) = false",
+      "parameters": [
+        "rltv_greg_mo"
+      ],
+      "sql_type": "postgreSQL"
+    },
+    "source": "alr",
+    "new_columns": [],
+    "temp_dataframe": "study_premise",
+    "process_order": 2
+  },
+  {
+    "dataframe": {
+      "sql": "select * from clr.variable",
+      "sql_type": "postgreSQL"
+    },
+    "source": "alr",
+    "new_columns": [],
+    "temp_dataframe": "variable",
+    "process_order": 3
+  },
+  {
+    "dataframe": {
+      "sql": "select bdf.rltv_mo, bdf.cust_acct_num as accountid, bdf.prem_num as premiseid, rdg_from_date as billstart, rdg_to_date as billstop, total_kwh as billkwh, avgmonthlykwh, num_months_monthlyavg, coalesce(bdf.rate_schd_cd,bf.rate_schd_cd) as ratecode, wc_dist, customer, account_status, zip_code as zipcode, bdf.cust_num, bdf.bill_date,  streetaddress, bdf.service_days as billdays, coalesce(netmeter,0) as netmeter, coalesce(ev_on_peak_kwh + ev_off_peak_kwh,0) as evkwh, bdf.prem_num as uev_site from utl.bill_detail_fact bdf left join (select prem_num, stat_date, 1 as netmeter from utl.net_meter_application where stat_name = 'Completed' and cd_sub_cmpny = 1500) nm on nm.prem_num = bdf.prem_num and nm.stat_date < bdf.rdg_to_date left join (select prem_num, prem_zip_cd as zip_code, cycl_day, efct_end_dttm, efct_strt_dttm from utl.premise where rmv_flag = false) prem on prem.prem_num = bdf.prem_num and bdf.rdg_to_date >= prem.efct_strt_dttm and bdf.rdg_to_date < prem.efct_end_dttm  left join (select * from (select cust_acct_num, prem_num, rltv_mo, bill_date, acct_stat_cd as account_status, rate_schd_cd, case when cust_name_2 is null then cust_name_1 else cust_name_1 || ' ' || cust_name_2 end as customer, dstr_cd as wc_dist, prem_addr as streetaddress, ROW_NUMBER() OVER (PARTITION BY cust_acct_num, prem_num, rltv_mo ORDER BY bill_date desc) as row_num from utl.billing_fact) bf1 where row_num = 1) bf on bf.cust_acct_num = bdf.cust_acct_num and bf.prem_num = bdf.prem_num and bf.rltv_mo = bdf.rltv_mo left join (select prem_num, round((sum(total_kwh)/sum(service_days))*30,4) as avgmonthlykwh, count(distinct(rltv_mo)) as num_months_monthlyavg from (select prem_num, sum(total_kwh) as total_kwh, rltv_mo, service_days, dense_rank()  over (partition by prem_num order by rltv_mo desc) as seq_num from utl.bill_detail_fact where debit_stat_cd = 2 and service_days > 0 and rdg_from_date is not null and rdg_to_date is not null and bill_date >= 'min_bill_date'::date and bill_date < 'bill_end'::date and rltv_mo <= {0} group by prem_num, rltv_mo, service_days) bdf2 where seq_num <= {1} group by prem_num) amu on amu.prem_num = bdf.prem_num where  bdf.bill_date >= 'bill_start'::date and  bdf.bill_date < 'bill_end'::date and  bdf.rltv_mo = {0} and debit_stat_cd = 2 and service_days > 0 and rdg_from_date is not null and rdg_to_date is not null and rdg_from_date >= 'bill_from_date'::date and rdg_to_date < 'bill_to_date'::date  and bdf.bill_date < current_date::date - interval '8 days' and bdf.bus_cd not in ('1091','1092','1093') and  (mada_condition) ",
+      "parameters": [
+        "rltv_greg_mo",
+        "aumonth"
+      ],
+      "parameters_to_replace": [
+        "mada_condition",
+        "bill_from_date",
+        "bill_to_date",
+        "bill_start",
+        "bill_end",
+        "min_bill_date"
+      ],
+      "sql_type": "slq"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "mada",
+    "join": {},
+    "process_order": 8
+  },
+  {
+    "dataframe": {
+      "sql": "select prem.prem_num as premiseid, prem.ami_dvc_name as meterid, prem.kwh_csnt as metermtpl,prem.fpl_mtr_num as metertype,case when prem.efct_strt_date <= prem.mtr_set_date then prem.mtr_set_date else prem.efct_strt_date end as meterstart, prem.efct_end_date as meterstop from (select prem_num, ami_dvc_name, fpl_mtr_num, kwh_csnt, min(mtr_set_date) as mtr_set_date,case when (lag(max(mtr_set_date)) over (partition by  prem_num, mtr_set_date order by max(efct_end_date) asc)::date) is null then mtr_set_date else min(efct_strt_date)::date end as efct_strt_date, case when (lead(max(mtr_set_date)) over (partition by  prem_num order by max(efct_end_date) asc)::date) is null then max(efct_end_date)::date else (lead(max(mtr_set_date)) over (partition by  prem_num order by max(efct_end_date) asc)::date) end as efct_end_date from utl.premise_meter  where kwh_csnt is not null and ami_dvc_name != 1 and prem_num != 373190907 group by prem_num, ami_dvc_name, fpl_mtr_num, kwh_csnt, mtr_set_date) prem union all select premiseid, meterid::varchar, 1 as metermtpl, 'evmeter' as metertype, min(meterstart) as meterstart, max(meterstop) as meterstop from (select prem.prem_num as premiseid, prem.ami_dvc_name::varchar as meterid, case when prem.efct_strt_date >= prem.mtr_set_date then prem.mtr_set_date else prem.efct_strt_date end as meterstart, prem.efct_end_date as meterstop from (select S.site_id as prem_num, cb.charge_box_id as ami_dvc_name, cb.charge_point_serial_number as fpl_mtr_num, NULL AS kwh_csnt, cb.chrgr_instl_dt::date as mtr_set_date, min(cb.efct_strt_dttm)::date as efct_strt_date, max(cb.efct_end_dttm)::date as efct_end_date from billing_fpl_fplnw_consolidated.ev_charge_box cb JOIN billing_fpl_fplnw_consolidated.ev_site S on cb.site_pk = S.site_pk AND cb.prod_id = S.prod_id AND S.crnt_row_flag = true where asset_status = 'Asset In-Service' and sub_comp_cd = 1500 group by S.site_id, cb.charge_box_id, cb.charge_point_serial_number,  cb.chrgr_instl_dt) prem) x group by premiseid, meterid::varchar union all select premiseid, 'uevmeterid' as meterid, 1 as metermtpl, 'uevmeter' as metertype, min(meterstart) as meterstart, max(meterstop) as meterstop from (select prem.prem_num as premiseid, prem.ami_dvc_name::varchar as meterid, 1 as metermtpl, prem.fpl_mtr_num as metertype, case when prem.efct_strt_date >= prem.mtr_set_date then prem.mtr_set_date else prem.efct_strt_date end as meterstart, prem.efct_end_date as meterstop from (select S.site_id as prem_num, cb.charge_box_id as ami_dvc_name, cb.charge_point_serial_number as fpl_mtr_num, NULL AS kwh_csnt, cb.chrgr_instl_dt::date as mtr_set_date, min(cb.efct_strt_dttm)::date as efct_strt_date, max(cb.efct_end_dttm)::date as efct_end_date from billing_fpl_fplnw_consolidated.ev_charge_box cb JOIN billing_fpl_fplnw_consolidated.ev_site S on cb.site_pk = S.site_pk AND cb.prod_id = S.prod_id AND S.crnt_row_flag = true where (asset_status = 'Asset In-Service' or asset_status is null) and sub_comp_cd is null group by S.site_id, cb.charge_box_id, cb.charge_point_serial_number,  cb.chrgr_instl_dt) prem) x group by premiseid",
+      "sql_type": "slq"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "meters",
+    "join": {},
+    "process_order": 4
+  },
+  {
+    "dataframe": {
+      "sql": "SELECT distinct prem_num as premiseid  from utl.pb_app_device  where  chnl_num not in (3,4) union all select distinct prem_num as premiseid from utl.iee_pb_device iee where chnl_num not in (3,4) and rcrdr_seq_num is not null and rcrdr_end_date >= '2021-07-01'",
+      "sql_type": "slq"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "pb_accounts",
+    "join": {},
+    "process_order": 5
+  },
+  {
+    "dataframe": {
+      "sql": "select min(to_char(T.trans_end_dttm::date, 'YYYYMM')) as rltv_mo, add_months(concat(cal_yr,concat('-'::varchar,concat(cal_mo,'-01'::varchar)))::date,-1)::date as billstart, (concat(cal_yr, (concat('-'::varchar,concat(cal_mo,'-01'::varchar))))::date)::date as billstop, sum(CASE WHEN t.energy_unit = 'Wh' THEN t.energy/1000.00 ELSE t.energy end) as billkwh, 1 as avgmonthlykwh, 1 as num_months_monthlyavg, S.zip as zipcode, greg_date as bill_date, 0 as netmeter, cyd.greg_date, max(S.addr) as streetaddress, 30 AS billdays, sum(CASE WHEN t.energy_unit = 'Wh' THEN t.energy/1000.00 ELSE t.energy end) as evkwh, s.site_id as uev_site from billing_fpl_fplnw_consolidated.ev_trans_detail_fact T JOIN billing_fpl_fplnw_consolidated.ev_site S on T.site_pk = S.site_pk AND T.prod_id = S.prod_id AND S.crnt_row_flag = TRUE inner join (select greg_date, cycl_day_num, rltv_greg_mo, greg_date - lag_greg as greg_days, cal_yr, cal_mo from (select greg_date, cycl_day_num, (EXTRACT(YEAR FROM greg_date)::integer || lpad(EXTRACT(MONTH FROM greg_date)::integer,2,0))::integer as rltv_greg_mo, lag(greg_date) over (partition by  cycl_day_num order by greg_date asc) as lag_greg, cal_yr, cal_mo from utl.day) x where (EXTRACT(YEAR FROM add_months(greg_date,-1))::integer || lpad(EXTRACT(MONTH FROM add_months(greg_date,-1))::integer,2,0))::integer = '{}' and cycl_day_num = 8 and cycl_day_num is not null) cyd on concat(cal_yr,concat('-'::varchar,concat(cal_mo,'-01'::varchar)))::date > T.trans_end_dttm::date and add_months(concat(cal_yr,concat('-'::varchar,concat(cal_mo,'-01'::varchar)))::date,-1)::date <= T.trans_end_dttm::date WHERE T.prod_id != 3 group by T.acct_num, S.site_id, add_months(concat(cal_yr,concat('-'::varchar,concat(cal_mo,'-01'::varchar)))::date,-1)::date, (concat(cal_yr,concat('-'::varchar,concat(cal_mo,'-01'::varchar)))::date - interval '1 days')::date, S.zip, cyd.greg_date, cal_yr, cal_mo",
+      "parameters": [
+        "rltv_greg_mo"
+      ],
+      "sql_type": "slq"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "uevmada",
+    "join": {},
+    "process_order": 6
+  },
+  {
+    "dataframe": {
+      "sql": "select premiseid, accountid, coalesce(ratecode,68::varchar) as ratecode, wc_dist, customer, account_status, cust_num from (select apc.install_num as premiseid, apc.acct_num as accountid, rate_schd_cd as ratecode, prem_dstr_cd as wc_dist, full_name as customer, acct_stat_cd  as account_status, cust_num, row_number() over(partition by apc.install_num order by acct_open_date desc) as row_num from billing_fpl_fplnw_consolidated.mv_acct_prem_cust apc left join (select install_num, prem_dstr_cd,acct_num from billing_fpl_fplnw_consolidated.account_installation where crnt_row_flag = true) ai on ai.install_num = apc.install_num and ai.acct_num = apc.acct_num where acct_open_date < '{}'::date and (uev_condition)) xx where row_num = 1",
+      "parameters": [
+        "bill_to_date"
+      ],
+      "parameters_to_replace": [
+        "uev_condition"
+      ],
+      "sql_type": "slq"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "uevcust",
+    "join": {},
+    "process_order": 7
+  },
+  {
+    "dataframe": {
+      "sql": "SELECT prem_num premiseid, rcrdr_id meterid, fpl_mtr_num metertype, rcrdr_seq_num channel,   chnl_num, rgstr_csnt metermtpl, grp, min(start_date) meterstart,  max( end_date ) meterstop FROM (  SELECT prem_num, rcrdr_id, fpl_mtr_num, efct_strt_date, efct_end_date, rcrdr_seq_num, rcrdr_id_efct_strt_date, mtr_efct_strt_date, chnl_num, rgstr_csnt, grp, end_order,  MIN(mtr_efct_strt_date) OVER (PARTITION BY prem_num, rcrdr_id ,fpl_mtr_num, rcrdr_seq_num, rgstr_csnt, grp ) AS start_date,  case when end_order = 1 then efct_end_date  else lead (mtr_efct_strt_date) over (partition by prem_num , rcrdr_seq_num order by end_order desc ) end as end_date  FROM (  SELECT prem_num, rcrdr_id, fpl_mtr_num, efct_strt_date, efct_end_date, rcrdr_seq_num, rcrdr_id_efct_strt_date, mtr_efct_strt_date, chnl_num, rgstr_csnt,  ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_seq_num ORDER BY efct_end_date desc, tbl desc) as end_order,  ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_id ,fpl_mtr_num ORDER BY efct_strt_date) -  ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_id ,fpl_mtr_num, rcrdr_seq_num, rgstr_csnt ORDER BY efct_strt_date) grp  FROM (  SELECT prem_num,    case when fpl_mtr_num like 'Q%' or chnl_num = 2    then rcrdr_seq_num*3-1 ELSE rcrdr_seq_num*3-2 END as rcrdr_seq_num,    rcrdr_id, fpl_mtr_num, efct_strt_date, efct_end_date, rcrdr_id_efct_strt_date, mtr_efct_strt_date, chnl_num, rgstr_csnt, 1 as tbl   from utl.pb_app_device  where  chnl_num not in (3,4)  and  (pb_condition) and rcrdr_id not in (select distinct(rcrdr_id) from utl.iee_pb_device) and (prem_num  in (select distinct prem_num from utl.iee_pb_device group by prem_num, rcrdr_seq_num, chnl_num having min(rcrdr_strt_date) > '2021-07-01') or (prem_num not in (select distinct prem_num from utl.iee_pb_device) and prem_num not in (select distinct prem_num from utl.pb_app_device group by prem_num having max(efct_end_date) < '2021-07-01'))) union all select prem_num, rcrdr_seq_num, rcrdr_id, fpl_mtr_num, rcrdr_strt_date::date, rcrdr_end_date::date, rcrdr_strt_datetime,  mtr_strt_date, chnl_num, rgstr_csnt,  tbl from (select prem_num, case when fpl_mtr_num like 'Q%' or chnl_num = 2 then rcrdr_seq_num*3-1 ELSE rcrdr_seq_num*3-2 END as rcrdr_seq_num, rcrdr_id, fpl_mtr_num, rcrdr_strt_date::date, rcrdr_end_date::date, rcrdr_strt_date as rcrdr_strt_datetime, rcrdr_strt_date as mtr_strt_date, chnl_num, rgstr_csnt, 2 as tbl ,  ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_id, rcrdr_seq_num, chnl_num, rcrdr_end_date ORDER BY rcrdr_strt_date, etl_batch_id desc  ) as  tb2_end_order from utl.iee_pb_device iee where chnl_num not in (3,4) and rcrdr_id not like 'G%' and rcrdr_seq_num is not null and rcrdr_end_date >= '2021-07-01') w where tb2_end_order=1 ) x  ) AS t ) s  where start_date != end_date and start_date < end_date group by prem_num, rcrdr_id, fpl_mtr_num, rcrdr_seq_num,chnl_num, rgstr_csnt, grp having max(end_date) >= '2021-07-01' union all SELECT prem_num as premiseid, 'SST' as meterid, 'XXXXXXX' metertype, 629 as channel, 1 as chnl_num, 1 as metermtpl, 0 as grp, min(read_start_time) as meterstart, '9999-12-31 00:00:00.000'::timestamp with time zone as meterstop from utl.iee_pb_duration_read_fact where itvl_chnl_num = 622 and read_end_time >= '2022-06-01'::timestamp with time zone group by prem_num",
+      "parameters_to_replace": [
+        "pb_condition"
+      ],
+      "sql_type": "slq"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "meters_pb",
+    "join": {},
+    "process_order": 9
+  },
+  {
+    "dataframe": {
+      "sql": "select prem_num as premiseid, metertype, read_strt_time AT TIME ZONE 'America/New_York' as read_strt_time, round(mrdg*metermtpl,4)::float as kwh,m.ami_dvc_name as meterid, uiq_chnl_num as channel, uom, mrdg_drtn_scnd as spi from utl.meter_duration_read_fact m inner join(select prem.prem_num, prem.ami_dvc_name as meterid, prem.kwh_csnt as metermtpl, prem.fpl_mtr_num as metertype,case when prem.efct_strt_date <= prem.mtr_set_date then prem.mtr_set_date else prem.efct_strt_date end as meterstart, prem.efct_end_date as meterstop from (select prem_num, ami_dvc_name, fpl_mtr_num, kwh_csnt, min(mtr_set_date) as mtr_set_date, case when (lag(max(mtr_set_date)) over (partition by  prem_num, mtr_set_date order by max(efct_end_date) asc)::date) is null then mtr_set_date else min(efct_strt_date)::date end as efct_strt_date, case when (lead(max(mtr_set_date)) over (partition by  prem_num order by max(efct_end_date) asc)::date) is null then max(efct_end_date)::date else (lead(max(mtr_set_date)) over (partition by  prem_num order by max(efct_end_date) asc)::date) end as efct_end_date from utl.premise_meter where kwh_csnt is not null and ami_dvc_name != 1 and (fpl_mtr_num like '%N' or fpl_mtr_num like '_____N%') group by prem_num, ami_dvc_name, fpl_mtr_num, kwh_csnt, mtr_set_date) prem) p on p.meterid = m.ami_dvc_name and p.meterstart <= m.read_strt_time::date and p.meterstop > m.read_strt_time::date where read_strt_time >= 'fecth_from_date'::timestamp with time zone and read_strt_time <'fecth_to_date'::timestamp with time zone and uiq_chnl_num in (2,4) and read_chnl_flag is null and mrdg is not null and (all_meter_condition_nm) union all select * from (select s.site_id as premiseid, 'evmeter' as metertype, RH.read_strt_dttm AT TIME ZONE 'America/New_York' as read_strt_time, case when lower(uom) = 'wh' then round(sum(mrdg), 4)/1000 else round(sum(mrdg), 4) end as kwh, CB.charge_box_id as meterid, 1000 as channel, 'kwh' as uom, 15 as spi from billing_fpl_fplnw_consolidated.ev_read_hist RH JOIN billing_fpl_fplnw_consolidated.ev_site S on RH.site_pk = S.site_pk AND RH.prod_id = S.prod_id AND S.crnt_row_flag = TRUE JOIN billing_fpl_fplnw_consolidated.ev_charge_box CB on RH.charge_box_id = CB.charge_box_id and CB.connector_id = RH.connector_id AND CB.site_pk = RH.site_pk AND RH.read_strt_dttm BETWEEN CB.efct_strt_dttm AND CB.efct_end_dttm where lower(uom) in ('kwh','wh') and rh.read_strt_dttm >= 'fecth_from_date'::timestamp with time zone and rh.read_strt_dttm < 'fecth_to_date'::timestamp with time zone and (all_ev_condition_nm) and mrdg >= 0 group by S.site_id, CB.connector_type,RH.read_strt_dttm AT TIME ZONE 'America/New_York',CB.charge_box_id, uom) yy where kwh < 6",
+      "column_names": [
+        "premiseid",
+        "metertype",
+        "read_strt_time",
+        "kwh",
+        "meterid",
+        "channel",
+        "uom",
+        "spi"
+      ],
+      "parameters_to_replace": [
+        "all_meter_condition_nm",
+        "all_ev_condition_nm",
+        "fecth_from_date",
+        "fecth_to_date"
+      ],
+      "sql_type": "redshift_unload"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "mass_market_nm",
+    "join": {},
+    "process_order": 10
+  },
+  {
+    "dataframe": {
+      "sql": "select prem_num as premiseid, metertype, read_strt_time AT TIME ZONE 'America/New_York' as read_strt_time, round(mrdg*metermtpl,4)::float as kwh, m.ami_dvc_name as meterid, uiq_chnl_num as channel, uom, mrdg_drtn_scnd as spi from utl.meter_duration_read_fact m inner join (select prem.prem_num, prem.ami_dvc_name as meterid, prem.kwh_csnt as metermtpl, prem.fpl_mtr_num as metertype, case when prem.efct_strt_date <= prem.mtr_set_date then prem.mtr_set_date else prem.efct_strt_date end as meterstart, prem.efct_end_date as meterstop from (select prem_num, ami_dvc_name, fpl_mtr_num, kwh_csnt, min(mtr_set_date) as mtr_set_date, case when (lag(max(mtr_set_date)) over (partition by  prem_num, mtr_set_date order by max(efct_end_date) asc)::date) is null then mtr_set_date else min(efct_strt_date)::date end as efct_strt_date, case when (lead(max(mtr_set_date)) over (partition by  prem_num order by max(efct_end_date) asc)::date) is null then max(efct_end_date)::date else (lead(max(mtr_set_date)) over (partition by  prem_num order by max(efct_end_date) asc)::date) end as efct_end_date from utl.premise_meter where kwh_csnt is not null and ami_dvc_name != 1 group by prem_num, ami_dvc_name, fpl_mtr_num, kwh_csnt, mtr_set_date) prem) p on p.meterid = m.ami_dvc_name and p.meterstart <= m.read_strt_time::date and p.meterstop > m.read_strt_time::date where read_strt_time >= 'fecth_from_date'::timestamp with time zone and read_strt_time < 'fecth_to_date'::timestamp with time zone and uiq_chnl_num = 1 and UPPER(uom) in ('MYWH','KWH') and read_chnl_flag is null and mrdg is not null and (all_meter_condition) union all select * from (select s.site_id as premiseid, 'evmeter' as metertype, RH.read_strt_dttm AT TIME ZONE 'America/New_York' as read_strt_time, case when lower(uom) = 'wh' then round(sum(mrdg), 4)/1000 else round(sum(mrdg), 4) end as kwh, CB.charge_box_id as meterid, 1000 as channel, 'kwh' as uom, 15 as spi from billing_fpl_fplnw_consolidated.ev_read_hist RH JOIN billing_fpl_fplnw_consolidated.ev_site S on RH.site_pk = S.site_pk AND RH.prod_id = S.prod_id AND S.crnt_row_flag = TRUE JOIN billing_fpl_fplnw_consolidated.ev_charge_box CB on RH.charge_box_id = CB.charge_box_id and CB.connector_id = RH.connector_id AND CB.site_pk = RH.site_pk AND RH.read_strt_dttm BETWEEN CB.efct_strt_dttm AND CB.efct_end_dttm where lower(uom) in ('kwh','wh') and rh.read_strt_dttm >= 'fecth_from_date'::timestamp with time zone and rh.read_strt_dttm < 'fecth_to_date'::timestamp with time zone and (all_ev_condition) and mrdg >= 0 group by S.site_id, CB.connector_type,RH.read_strt_dttm AT TIME ZONE 'America/New_York',CB.charge_box_id, uom) yy where kwh < 6 union all select s.site_id as premiseid, 'uevmeter' as metertype, RH.read_strt_dttm AT TIME ZONE 'America/New_York' as read_strt_time, sum(case when lower(uom) = 'wh' then round(mrdg, 4)/1000 else round(mrdg, 4) end) as mrdg, 'uevmeterid' as meterid, 2000 as channel, 'kwh' as uom, 15 as spi from billing_fpl_fplnw_consolidated.ev_read_hist RH JOIN billing_fpl_fplnw_consolidated.ev_site S on RH.site_pk = S.site_pk AND RH.prod_id = S.prod_id AND S.crnt_row_flag = TRUE JOIN billing_fpl_fplnw_consolidated.ev_charge_box CB on RH.charge_box_id = CB.charge_box_id and CB.connector_id = RH.connector_id and CB.site_pk = RH.site_pk AND RH.read_strt_dttm BETWEEN CB.efct_strt_dttm AND CB.efct_end_dttm where lower(uom) in ('kwh','wh') and rh.read_strt_dttm >= 'fecth_from_date'::timestamp with time zone and rh.read_strt_dttm < 'fecth_to_date'::timestamp with time zone and (all_uev_condition) and s.prod_id != 3 and mrdg >= 0 group by s.site_id, RH.read_strt_dttm AT TIME ZONE 'America/New_York' having sum(case when lower(uom) = 'wh' then round(mrdg, 4)/1000 else round(mrdg, 4) end) < 150",
+      "column_names": [
+        "premiseid",
+        "metertype",
+        "read_strt_time",
+        "kwh",
+        "meterid",
+        "channel",
+        "uom",
+        "spi"
+      ],
+      "parameters_to_replace": [
+        "all_meter_condition",
+        "all_ev_condition",
+        "all_uev_condition",
+        "fecth_from_date",
+        "fecth_to_date"
+      ],
+      "sql_type": "redshift_unload"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "mass_market_not_nm",
+    "join": {},
+    "process_order": 11
+  },
+  {
+    "dataframe": {
+      "sql": "select prem_num as premiseid, fpl_mtr_num as metertype, read_start_time as read_strt_time, kwh::float, rcrdr_id as meterid, channel, uom, 15 as spi from (    select cons_date, kwh, prem_num,      src, read_start_time, uom, channel, rcrdr_id, fpl_mtr_num,  row_number() over (partition by rcrdr_id, fpl_mtr_num, channel, read_start_time order by src asc, kwh asc) as seq_num    from(    select d.prem_num, f.src, f.rcrdr_id,  d.fpl_mtr_num, channel,      date_for as cons_date, round(mrdg*d.ke_csnt,6) as kwh, read_end_time - INTERVAL '15 min'  as read_start_time, uom     from    (    select '1_IEE' as src, case when ami_dvc_name ~ '[A-Za-z]' then right(ami_dvc_name, length(ami_dvc_name) - 2) else ami_dvc_name end as rcrdr_id, '' fpl_mtr_num, phys_chnl_num as chnl_num,  read_end_time,      mrdg/pulse_multp as mrdg, (read_end_time - INTERVAL '15 min')::date as date_for, uom    from utl.iee_pb_duration_read_fact     where uom in ('KWH')      and read_end_time >= 'fecth_from_date'::timestamp with time zone      and read_end_time <= 'fecth_to_date'::timestamp with time zone      and read_type = 'Interval'      and channel_type = 'Interval' and stat_code not like '%POWER_FAIL%'and not (stat_code like '%IRREGULAR%' and mrdg = 0) union all     select '5_TMS' as src, case when rcrdr_id ~ '[A-Za-z]' then right(rcrdr_id, length(rcrdr_id) - 2) else rcrdr_id end as rcrdr_id,  '' as fpl_mtr_num, phys_chnl_num, read_end_time, mrdg_raw_valu,      (read_end_time - INTERVAL '15 min')::date as date_for, uom    from utl.pb_tms_duration_read_fact tms     where UPPER(uom) = 'KWH'      and read_end_time >= 'fecth_from_date'::timestamp with time zone      and read_end_time <= 'fecth_to_date'::timestamp with time zone   union all    select '3_SG' as src, case when ami_dvc_name ~ '[A-Za-z]' then right(ami_dvc_name, length(ami_dvc_name) - 2) else ami_dvc_name end as rcrdr_id, '' fpl_mtr_num, uiq_chnl_num chnl_num,  read_end_time, mrdg_raw_valu,      (read_end_time - INTERVAL '15 min')::date as date_for, uom    from utl.pb_duration_read_fact sg     where UPPER(uom) in ('KWH','KWH (RECEIVED)','KWH (REC)','KWHRECEIVE') and coalesce(read_chnl_flag,'') not like '%Skipped%' and not (coalesce(read_chnl_flag,'') like '%Partial%' and mrdg_raw_valu = 0) and read_end_time >= 'fecth_from_date'::timestamp with time zone      and read_end_time <= 'fecth_to_date'::timestamp with time zone   union all    select '2_APP' as src, case when rcrdr_id ~ '[A-Za-z]' then right(rcrdr_id, length(rcrdr_id) - 2) else rcrdr_id end as rcrdr_id, pb_app.fpl_mtr_num, phys_chnl_num, read_end_time, mrdg_raw_valu,      (read_end_time - INTERVAL '15 min')::date as date_for, uom    from utl.pb_app_duration_read_fact pb_app     where UPPER(uom) = 'KWH'      and read_end_time >= 'fecth_from_date'::timestamp with time zone      and read_end_time <= 'fecth_to_date'::timestamp with time zone   union all    select '4_MV90' as src, case when rcrdr_id ~ '[A-Za-z]' then right(rcrdr_id, length(rcrdr_id) - 2) else rcrdr_id end as rcrdr_id, mv.fpl_mtr_num, phys_chnl_num, read_end_time, mrdg_raw_valu ,       (read_end_time - INTERVAL '15 min')::date as date_for, uom    from utl.pb_mv90_duration_read_fact mv     where UPPER(uom) = 'KWH' and coalesce(itvl_stat,'') != 'PO' and not (itvl_stat is not null and mrdg_raw_valu = 0) and read_end_time >= 'fecth_from_date'::timestamp with time zone      and read_end_time <= 'fecth_to_date'::timestamp with time zone) f  inner join (    SELECT prem_num , rcrdr_id , fpl_mtr_num, rcrdr_seq_num channel, chnl_num,     ke_csnt, grp,    min(start_date) start_date,    max( end_date ) end_date  FROM (    SELECT prem_num, rcrdr_id, fpl_mtr_num, efct_strt_date, efct_end_date, rcrdr_seq_num, rcrdr_id_efct_strt_date, mtr_efct_strt_date, chnl_num, ke_csnt, grp, end_order,    MIN(mtr_efct_strt_date) OVER (PARTITION BY prem_num, rcrdr_id ,fpl_mtr_num, rcrdr_seq_num, ke_csnt, grp ) AS start_date,    case when end_order = 1 then efct_end_date    else lead (mtr_efct_strt_date) over (partition by prem_num , rcrdr_seq_num order by end_order desc ) end as end_date    FROM (    SELECT prem_num, rcrdr_id, fpl_mtr_num, efct_strt_date, efct_end_date, rcrdr_seq_num, rcrdr_id_efct_strt_date, mtr_efct_strt_date, chnl_num, ke_csnt,    ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_seq_num ORDER BY efct_end_date desc, tbl desc) as end_order,    ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_id ,fpl_mtr_num ORDER BY efct_strt_date) -    ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_id ,fpl_mtr_num, rcrdr_seq_num, ke_csnt ORDER BY efct_strt_date) grp    FROM (    SELECT prem_num,      case when fpl_mtr_num like 'Q%' or chnl_num = 2      then rcrdr_seq_num*3-1 ELSE rcrdr_seq_num*3-2 END as rcrdr_seq_num,      rcrdr_id, fpl_mtr_num, efct_strt_date, efct_end_date, rcrdr_id_efct_strt_date, mtr_efct_strt_date, chnl_num, ke_csnt, 1 as tbl  from utl.pb_app_device    where chnl_num not in (3,4) and  (pb_condition) and rcrdr_id not in (select distinct(rcrdr_id) from utl.iee_pb_device) and (prem_num  in (select distinct prem_num from utl.iee_pb_device group by prem_num, rcrdr_seq_num, chnl_num having min(rcrdr_strt_date) > '2021-07-01') or (prem_num not in (select distinct prem_num from utl.iee_pb_device) and prem_num not in (select distinct prem_num from utl.pb_app_device group by prem_num having max(efct_end_date) < '2021-07-01'))) union all select prem_num, rcrdr_seq_num, rcrdr_id, fpl_mtr_num, rcrdr_strt_date::date, rcrdr_end_date::date, rcrdr_strt_datetime,  mtr_strt_date, chnl_num, ke_csnt,  tbl from (select prem_num, case when fpl_mtr_num like 'Q%' or chnl_num = 2 then rcrdr_seq_num*3-1 ELSE rcrdr_seq_num*3-2 END as rcrdr_seq_num, rcrdr_id, fpl_mtr_num, rcrdr_strt_date::date, rcrdr_end_date::date, rcrdr_strt_date as rcrdr_strt_datetime, rcrdr_strt_date as mtr_strt_date, chnl_num, ke_csnt, 2 as tbl ,  ROW_NUMBER() OVER (PARTITION BY prem_num, rcrdr_id, rcrdr_seq_num, chnl_num, rcrdr_end_date ORDER BY rcrdr_strt_date, etl_batch_id desc ) as  tb2_end_order from utl.iee_pb_device iee where chnl_num not in (3,4) and rcrdr_seq_num is not null and rcrdr_end_date >= '2021-07-01') w where tb2_end_order=1 ) x) AS t ) s where start_date != end_date and start_date < end_date group by prem_num, rcrdr_id, fpl_mtr_num, rcrdr_seq_num,chnl_num, ke_csnt, grp having max(end_date) >= '2021-07-01') d   on d.rcrdr_id = f.rcrdr_id and d.chnl_num = f.chnl_num   and d.end_date > date_for and d.start_date <= date_for) x) y  where seq_num = 1 union all select prem_num as premiseid, 'XXXXXXX' as metertype, read_start_time, sum(mrdg)::float as kwh,   'SST' as meterid, 629 as channel, 'kwh' as uom, itvl_len as spi from utl.iee_pb_duration_read_fact where itvl_chnl_num in ('622','623') and read_end_time >= 'fecth_from_date'::timestamp with time zone and read_end_time <= 'fecth_to_date'::timestamp with time zone and stat_code not like '%POWER_FAIL%' and not (stat_code like '%IRREGULAR%' and mrdg = 0) group by prem_num, read_start_time, itvl_len",
+      "parameters_to_replace": [
+        "fecth_from_date",
+        "fecth_to_date",
+        "pb_condition"
+      ],
+      "sql_type": "sql"
+    },
+    "source": "greenplum",
+    "new_columns": [],
+    "temp_dataframe": "power_billing",
+    "join": {},
+    "process_order": 12
+  }
+]
