@@ -16,5 +16,7 @@ WHERE S.site_id = '5730'  -- or whichever affected premise
     AND RH.read_strt_dttm < '2025-01-02'::timestamp with time zone
 ORDER BY RH.read_strt_dttm
 LIMIT 20;
-<img width="1225" height="805" alt="image" src="https://github.com/user-attachments/assets/179bfa72-cc1b-4a7a-bca4-15ee1aaf950d" />
+
+<img width="815" height="387" alt="image" src="https://github.com/user-attachments/assets/932c3276-20b3-40e6-a0c3-8bafcd7140b0" />
+
 
