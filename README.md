@@ -17,6 +17,7 @@ WHERE S.site_id = '5730'  -- or whichever affected premise
 ORDER BY RH.read_strt_dttm
 LIMIT 20;
 
-<img width="815" height="387" alt="image" src="https://github.com/user-attachments/assets/932c3276-20b3-40e6-a0c3-8bafcd7140b0" />
+<img width="1597" height="1497" alt="image" src="https://github.com/user-attachments/assets/186ac96f-9bd0-4af1-a6f4-aa31651fd4df" />
+
 
 
